@@ -21,6 +21,9 @@ export function rollupPlugin(entrypoints: InputOptions['input']) {
           //   stdio: 'inherit',
           // })
 
+          // TODO: get sk1 babel config from plugin-javascript
+          // const babelConfig = await con;
+
           await build(
             {
               input: project.entries.map(entry =>
