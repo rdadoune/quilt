@@ -10,6 +10,7 @@ import {typescript} from '@sewing-kit/plugin-typescript';
 import {buildFlexibleOutputs} from '@sewing-kit/plugin-package-flexible-outputs';
 import {} from '@sewing-kit/plugin-jest';
 
+import {rollupPlugin} from './rollup-plugin';
 import {addLegacyDecoratorSupport} from './plugin';
 
 export function quiltPackage({jestEnv = 'jsdom', useReact = false} = {}) {
@@ -17,7 +18,10 @@ export function quiltPackage({jestEnv = 'jsdom', useReact = false} = {}) {
     javascript(),
     typescript(),
     useReact && react(),
-    buildFlexibleOutputs(),
+    // buildFlexibleOutputs(),
+
+    rollupPlugin(),
+
     createProjectBuildPlugin('Quilt.PackageBuild', ({hooks}) => {
       hooks.target.hook(({hooks}) => {
         hooks.configure.hook(hooks => {
