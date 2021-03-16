@@ -45,6 +45,7 @@
     "@babel/core": "^7.11.6",
     "@rollup/plugin-babel": "^5.3.0",
     "@rollup/plugin-commonjs": "^17.1.0",
+    "@rollup/plugin-image": "^2.0.6",
     "@rollup/plugin-node-resolve": "^11.2.0",
     "@sewing-kit/cli": "^0.2.1",
     "@sewing-kit/config": "^0.1.8",
