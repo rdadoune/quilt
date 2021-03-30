@@ -20,5 +20,3 @@ export {
   DateStyle,
   Weekday,
 } from './constants';
-
-console.log('foo-bar-react-i18n');
