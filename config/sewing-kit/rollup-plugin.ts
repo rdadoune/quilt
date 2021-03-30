@@ -20,6 +20,7 @@ type VariantNames = 'cjs' | 'esm' | 'esnext' | 'umd';
 interface PluginOptions {
   variants?: Record<VariantNames, boolean>;
   plugins?: RollupPlugin[];
+  css?: boolean;
 }
 
 interface RollupHooks {
@@ -76,10 +77,24 @@ export function rollupPlugin({
       ].filter(item => Boolean(item));
 
       // Add additional plugins to each target
-      hooks.target.hook(({hooks}) => {
+      hooks.target.hook(({target, hooks}) => {
         hooks.configure.hook(hooks => {
           hooks.rollupPlugins.hook(rollupPlugins => {
-            return rollupPlugins.concat(optionalBuiltinRollupPlugins, plugins);
+            // @ts-expect-error output does exist, we just need to type it properly
+            const output: VariantNames = target.options.output;
+            const pluginsBuilder = rollupPluginsBuilders[output];
+
+            if (!pluginsBuilder) {
+              return;
+            }
+
+            const corePlugins = pluginsBuilder();
+
+            return rollupPlugins.concat(
+              corePlugins,
+              optionalBuiltinRollupPlugins,
+              plugins,
+            );
           });
         });
       });
@@ -99,21 +114,22 @@ export function rollupPlugin({
             async stepRunner => {
               // @ts-expect-error output does exist, we just need to type it properly
               const output: VariantNames = target.options.output;
-              const configBuilder = rollupConfigBuilders[output];
+              const outputOptionsBuilder = rollupOutputOptionsBuilders[output];
 
-              if (!configBuilder) {
+              if (!outputOptionsBuilder) {
                 return;
               }
 
               const rollupPlugins = await configuration.rollupPlugins.run([]);
 
-              const {inputOptions, outputOptionsArray} = configBuilder({
-                input: inputEntries,
-                plugins: rollupPlugins,
-                outDir: project.fs.buildPath(output),
-              });
+              const outputOptionsArray = outputOptionsBuilder(
+                project.fs.buildPath(output),
+              );
 
-              await build(inputOptions, outputOptionsArray);
+              await build(
+                {input: inputEntries, plugins: rollupPlugins},
+                outputOptionsArray,
+              );
 
               stepRunner.log(
                 `Created ${outputOptionsArray.map(({dir}) => dir)}`,
@@ -126,94 +142,61 @@ export function rollupPlugin({
   );
 }
 
-type RollupConfigBuilderFn = (options: {
-  input: InputOptions['input'];
-  plugins: InputOptions['plugins'];
-  outDir: string;
-}) => {inputOptions: InputOptions; outputOptionsArray: OutputOptions[]};
+const rollupPluginsBuilders: Record<
+  VariantNames,
+  () => InputOptions['plugins']
+> = {
+  cjs() {
+    return inputPluginsFactory({
+      browserslistEnv: 'node',
+    });
+  },
+  esm() {
+    return inputPluginsFactory({
+      browserslistEnv: 'production',
+    });
+  },
+  umd() {
+    return inputPluginsFactory({
+      browserslistEnv: 'production',
+    });
+  },
+  esnext() {
+    return inputPluginsFactory({
+      browserslistEnv: 'esnext',
+    });
+  },
+};
 
-const rollupConfigBuilders: Record<VariantNames, RollupConfigBuilderFn> = {
-  cjs({input, plugins, outDir}) {
-    return {
-      inputOptions: {
-        input,
-        plugins: inputPluginsFactory({
-          browserslistEnv: 'node',
-          additionalPlugins: plugins,
-        }),
-      },
-      outputOptionsArray: [
-        {
-          format: 'cjs',
-          dir: outDir,
-          preserveModules: true,
-          exports: 'named',
-        },
-      ],
-    };
+const rollupOutputOptionsBuilders: Record<
+  VariantNames,
+  (dir: string) => OutputOptions[]
+> = {
+  cjs(dir) {
+    return [{format: 'cjs', dir, preserveModules: true, exports: 'named'}];
   },
-  esm({input, plugins, outDir}) {
-    return {
-      inputOptions: {
-        input,
-        plugins: inputPluginsFactory({
-          browserslistEnv: 'production',
-          additionalPlugins: plugins,
-        }),
-      },
-      outputOptionsArray: [
-        {
-          format: 'esm',
-          dir: outDir,
-          preserveModules: true,
-        },
-      ],
-    };
+  esm(dir) {
+    return [{format: 'esm', dir, preserveModules: true}];
   },
-  umd({input, plugins, outDir}) {
-    return {
-      inputOptions: {
-        input,
-        plugins: inputPluginsFactory({
-          browserslistEnv: 'production',
-          additionalPlugins: plugins,
-        }),
-      },
-      outputOptionsArray: [
-        {
-          format: 'umd',
-          dir: outDir,
-        },
-      ],
-    };
+  umd(dir) {
+    return [{format: 'umd', dir}];
   },
-  esnext({input, plugins, outDir}) {
-    return {
-      inputOptions: {
-        input,
-        plugins: inputPluginsFactory({
-          browserslistEnv: 'esnext',
-          additionalPlugins: plugins,
-        }),
+  esnext(dir) {
+    return [
+      {
+        format: 'esm',
+        dir,
+        preserveModules: true,
+        entryFileNames: '[name][extname].esnext',
       },
-      outputOptionsArray: [
-        {
-          format: 'esm',
-          dir: outDir,
-          preserveModules: true,
-          entryFileNames: '[name][extname].esnext',
-        },
-      ],
-    };
+    ];
   },
 };
 
 function inputPluginsFactory({
   browserslistEnv = 'production',
-  additionalPlugins = [],
 }: {
   browserslistEnv: string;
-  additionalPlugins?: RollupPlugin[];
 }): InputOptions['plugins'] {
   return [
     nodeResolve({
@@ -237,7 +220,6 @@ function inputPluginsFactory({
         ['@shopify/babel-preset/react'],
       ],
     }),
-    ...additionalPlugins,
   ];
 }
 
@@ -247,6 +229,8 @@ async function build(
 ) {
   // create a bundle
   const bundle = await rollup(inputOptions);
+
+  // console.log(inputOptions);
 
   for (const outputOptions of outputOptionsArray) {
     await bundle.write(outputOptions);
