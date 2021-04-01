@@ -13,6 +13,8 @@ import {} from '@sewing-kit/plugin-jest';
 import {rollupPlugin} from './rollup-plugin';
 import {addLegacyDecoratorSupport} from './plugin';
 
+const dummyPlugin = () => ({name: 'dummyRollupPlugin'});
+
 export function quiltPackage({jestEnv = 'jsdom', useReact = false} = {}) {
   return createComposedProjectPlugin<Package>('Quilt.Package', [
     javascript(),
@@ -20,7 +22,7 @@ export function quiltPackage({jestEnv = 'jsdom', useReact = false} = {}) {
     useReact && react(),
     // buildFlexibleOutputs(),
 
-    rollupPlugin(),
+    rollupPlugin({plugins: [dummyPlugin()]}),
 
     createProjectBuildPlugin('Quilt.PackageBuild', ({hooks}) => {
       hooks.target.hook(({hooks}) => {

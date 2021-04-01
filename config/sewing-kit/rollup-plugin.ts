@@ -4,6 +4,7 @@ import {
   Package,
   addHooks,
   WaterfallHook,
+  createComposedProjectPlugin,
 } from '@sewing-kit/plugins';
 import {
   rollup,
@@ -15,31 +16,98 @@ import babel from '@rollup/plugin-babel';
 import commonjs from '@rollup/plugin-commonjs';
 import nodeResolve from '@rollup/plugin-node-resolve';
 
-type VariantNames = 'cjs' | 'esm' | 'esnext' | 'umd';
+// Questions
 
-interface PluginOptions {
-  variants?: Record<VariantNames, boolean>;
-  plugins?: RollupPlugin[];
-  css?: boolean;
-}
+// - Move outputOptions to be a hook to allow folks to config custom outputs
+//   - impact on "options.target" being stringy typed (as other plugins may add other types)
+// - consistent naming of output / variant / target
+
+// Oh hey quilt doesn't enable ts's strict mode :<
+// Investigate tightening that up in a new PR
+
+const allDefaultVariants = ['cjs', 'esm', 'esnext', 'umd'] as const;
+type DefaultVariantName = typeof allDefaultVariants[number];
 
 interface RollupHooks {
   readonly rollupPlugins: WaterfallHook<RollupPlugin[]>;
 }
+
+type PluginsOrPluginsBuilder =
+  | ((target: any) => RollupPlugin[])
+  | RollupPlugin[];
 
 declare module '@sewing-kit/hooks' {
   interface BuildProjectConfigurationCustomHooks extends RollupHooks {}
 }
 
 export function rollupPlugin({
-  variants,
-  // typescript = true,
   css = true,
-  // graphql = true,
-  plugins = [],
-}: PluginOptions = {}) {
+  plugins,
+}: {
+  css?: boolean;
+  plugins?: Parameters<typeof rollupCustomPluginsPlugin>[0];
+} = {}) {
+  // Once we split this into one plugin file, rework this to lazy load plugins
+  return createComposedProjectPlugin<Package>('App.Rollup.KitchenSink', [
+    rollupCorePlugin(),
+    css && rollupCssPlugin(),
+    plugins && rollupCustomPluginsPlugin(plugins),
+  ]);
+}
+
+export function rollupCssPlugin() {
+  return createProjectBuildPlugin<Package>('App.Rollup.Css', ({hooks}) => {
+    hooks.target.hook(({hooks}) => {
+      hooks.configure.hook(hooks => {
+        hooks.rollupPlugins.hook(rollupPlugins => {
+          const dummyPlugin = () => ({name: 'dummyCssPlugin'});
+
+          rollupPlugins.push(dummyPlugin());
+          return rollupPlugins;
+        });
+      });
+    });
+  });
+}
+
+export function rollupCustomPluginsPlugin(plugins: PluginsOrPluginsBuilder) {
   return createProjectBuildPlugin<Package>(
-    'App.Rollup.Build',
+    'App.Rollup.CustomPlugins',
+    ({hooks}) => {
+      hooks.target.hook(({hooks, target}) => {
+        hooks.configure.hook(hooks => {
+          hooks.rollupPlugins.hook(rollupPlugins => {
+            // plugins may be either an array of plugins or a builder function
+            // that returns the plugins for a given target
+            const pluginsArray = Array.isArray(plugins)
+              ? plugins
+              : plugins(target);
+
+            return rollupPlugins.concat(pluginsArray);
+          });
+        });
+      });
+    },
+  );
+}
+
+interface RollupCorePluginOptions {
+  variants?: Partial<Record<DefaultVariantName, boolean>>;
+}
+
+export function rollupCorePlugin({
+  variants: variantsOption = {},
+}: RollupCorePluginOptions = {}) {
+  const variants: Record<DefaultVariantName, boolean> = {
+    cjs: true,
+    esm: true,
+    esnext: true,
+    umd: false,
+    ...variantsOption,
+  };
+
+  return createProjectBuildPlugin<Package>(
+    'App.Rollup.Core',
     ({api, hooks, project}) => {
       // Define hooks that are available to be configured
       // Allows for consumers and other SK plugins to adjust the rollup config
@@ -53,13 +121,7 @@ export function rollupPlugin({
       // Define variants to build.
       // For each variant that is set to true in the options, add a target
       // Several variants are enabled by default
-      const targetOptionsArray = Object.entries({
-        cjs: true,
-        esm: true,
-        esnext: true,
-        umd: false,
-        ...variants,
-      })
+      const targetOptionsArray = Object.entries(variants)
         .filter(([_, isEnabled]) => Boolean(isEnabled))
         .map(([variant]) => ({output: variant}));
 
@@ -69,32 +131,18 @@ export function rollupPlugin({
         });
       });
 
-      // Add extra plugins based on configuration
-      const dummyPlugin = () => ({name: 'dummyPlugin'});
-      const optionalBuiltinRollupPlugins: RollupPlugin[] = [
-        css && dummyPlugin(),
-        // graphql, etc
-      ].filter(item => Boolean(item));
-
       // Add additional plugins to each target
       hooks.target.hook(({target, hooks}) => {
         hooks.configure.hook(hooks => {
           hooks.rollupPlugins.hook(rollupPlugins => {
             // @ts-expect-error output does exist, we just need to type it properly
-            const output: VariantNames = target.options.output;
-            const pluginsBuilder = rollupPluginsBuilders[output];
+            const output = target.options.output;
 
-            if (!pluginsBuilder) {
-              return;
-            }
+            const defaultPlugins = isKnownVariant(output)
+              ? rollupDefaultPluginsBuilder(output)
+              : [];
 
-            const corePlugins = pluginsBuilder();
-
-            return rollupPlugins.concat(
-              corePlugins,
-              optionalBuiltinRollupPlugins,
-              plugins,
-            );
+            return rollupPlugins.concat(defaultPlugins);
           });
         });
       });
@@ -112,19 +160,23 @@ export function rollupPlugin({
           api.createStep(
             {id: 'Rollup', label: 'Building the package with Rollup'},
             async stepRunner => {
-              // @ts-expect-error output does exist, we just need to type it properly
-              const output: VariantNames = target.options.output;
-              const outputOptionsBuilder = rollupOutputOptionsBuilders[output];
+              // @ts-expect-error Options thinks it has nothing on it, even thoough we set this
+              const output = target.options.output;
 
-              if (!outputOptionsBuilder) {
+              if (!isKnownVariant(output)) {
+                return;
+              }
+
+              const outputOptionsArray = rollupOutputOptionsBuilder(
+                output,
+                project.fs.buildPath(output),
+              );
+
+              if (outputOptionsArray.length === 0) {
                 return;
               }
 
               const rollupPlugins = await configuration.rollupPlugins.run([]);
-
-              const outputOptionsArray = outputOptionsBuilder(
-                project.fs.buildPath(output),
-              );
 
               await build(
                 {input: inputEntries, plugins: rollupPlugins},
@@ -142,56 +194,57 @@ export function rollupPlugin({
   );
 }
 
-const rollupPluginsBuilders: Record<
-  VariantNames,
-  () => InputOptions['plugins']
-> = {
-  cjs() {
-    return inputPluginsFactory({
-      browserslistEnv: 'node',
-    });
-  },
-  esm() {
-    return inputPluginsFactory({
-      browserslistEnv: 'production',
-    });
-  },
-  umd() {
-    return inputPluginsFactory({
-      browserslistEnv: 'production',
-    });
-  },
-  esnext() {
-    return inputPluginsFactory({
-      browserslistEnv: 'esnext',
-    });
-  },
-};
+function isKnownVariant(value: any): value is DefaultVariantName {
+  return allDefaultVariants.includes(value);
+}
 
-const rollupOutputOptionsBuilders: Record<
-  VariantNames,
-  (dir: string) => OutputOptions[]
-> = {
-  cjs(dir) {
-    return [{format: 'cjs', dir, preserveModules: true, exports: 'named'}];
-  },
-  esm(dir) {
-    return [{format: 'esm', dir, preserveModules: true}];
-  },
-  umd(dir) {
-    return [{format: 'umd', dir}];
-  },
-  esnext(dir) {
-    return [
-      {
-        format: 'esm',
-        dir,
-        preserveModules: true,
-        entryFileNames: '[name][extname].esnext',
-      },
-    ];
-  },
-};
+function rollupDefaultPluginsBuilder(variant: string): InputOptions['plugins'] {
+  switch (variant) {
+    case 'cjs':
+      return inputPluginsFactory({
+        browserslistEnv: 'node',
+      });
+    case 'esm':
+      return inputPluginsFactory({
+        browserslistEnv: 'production',
+      });
+    case 'umd':
+      return inputPluginsFactory({
+        browserslistEnv: 'production',
+      });
+    case 'esnext':
+      return inputPluginsFactory({
+        browserslistEnv: 'esnext',
+      });
+    default:
+      return [];
+  }
+}
+
+function rollupOutputOptionsBuilder(
+  variant: string,
+  dir: string,
+): OutputOptions[] {
+  switch (variant) {
+    case 'cjs':
+      return [{format: 'cjs', dir, preserveModules: true, exports: 'named'}];
+    case 'esm':
+      return [{format: 'esm', dir, preserveModules: true}];
+    case 'umd':
+      return [{format: 'umd', dir}];
+    case 'esnext':
+      return [
+        {
+          format: 'esm',
+          dir,
+          preserveModules: true,
+          entryFileNames: '[name][extname].esnext',
+        },
+      ];
+    default:
+      return [];
+  }
+}
 
 function inputPluginsFactory({
   browserslistEnv = 'production',
@@ -230,7 +283,7 @@ async function build(
   // create a bundle
   const bundle = await rollup(inputOptions);
 
-  // console.log(inputOptions);
+  console.log(inputOptions, outputOptionsArray);
 
   for (const outputOptions of outputOptionsArray) {
     await bundle.write(outputOptions);
