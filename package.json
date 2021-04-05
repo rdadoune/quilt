@@ -99,16 +99,5 @@
   "resolutions": {
     "@types/react": "16.9.19",
     "@types/react-dom": "16.9.5"
-  },
-  "browserslist": {
-    "production": [
-      "extends @shopify/browserslist-config"
-    ],
-    "esnext": [
-      "extends @shopify/browserslist-config/latest-evergreen"
-    ],
-    "node": [
-      "maintained node versions"
-    ]
   }
 }

@@ -22,9 +22,6 @@ import nodeResolve from '@rollup/plugin-node-resolve';
 //   - impact on "options.target" being stringy typed (as other plugins may add other types)
 // - consistent naming of output / variant / target
 
-// Oh hey quilt doesn't enable ts's strict mode :<
-// Investigate tightening that up in a new PR
-
 const allDefaultVariants = ['cjs', 'esm', 'esnext', 'umd'] as const;
 type DefaultVariantName = typeof allDefaultVariants[number];
 
@@ -199,22 +196,28 @@ function isKnownVariant(value: any): value is DefaultVariantName {
 }
 
 function rollupDefaultPluginsBuilder(variant: string): InputOptions['plugins'] {
+  const targets = {
+    production: 'extends @shopify/browserslist-config',
+    esnext: 'extends @shopify/browserslist-config/latest-evergreen',
+    node: 'maintained node versions',
+  };
+
   switch (variant) {
     case 'cjs':
       return inputPluginsFactory({
-        browserslistEnv: 'node',
+        targets: targets.node,
       });
     case 'esm':
       return inputPluginsFactory({
-        browserslistEnv: 'production',
+        targets: targets.production,
       });
     case 'umd':
       return inputPluginsFactory({
-        browserslistEnv: 'production',
+        targets: targets.production,
       });
     case 'esnext':
       return inputPluginsFactory({
-        browserslistEnv: 'esnext',
+        targets: targets.esnext,
       });
     default:
       return [];
@@ -247,9 +250,9 @@ function rollupOutputOptionsBuilder(
 }
 
 function inputPluginsFactory({
-  browserslistEnv = 'production',
+  targets = 'defaults',
 }: {
-  browserslistEnv: string;
+  targets: string;
 }): InputOptions['plugins'] {
   return [
     nodeResolve({
@@ -267,7 +270,7 @@ function inputPluginsFactory({
       exclude: 'node_modules/**',
       babelHelpers: 'bundled',
       configFile: false,
-      browserslistEnv,
+      targets,
       presets: [
         ['@shopify/babel-preset/web', {modules: 'auto', typescript: true}],
         ['@shopify/babel-preset/react'],
