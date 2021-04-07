@@ -5,6 +5,8 @@ import {
   addHooks,
   WaterfallHook,
   createComposedProjectPlugin,
+  Runtime,
+  LogLevel,
 } from '@sewing-kit/plugins';
 import {
   rollup,
@@ -19,22 +21,18 @@ import nodeResolve from '@rollup/plugin-node-resolve';
 // Questions
 
 // - Move outputOptions to be a hook to allow folks to config custom outputs
-//   - impact on "options.target" being stringy typed (as other plugins may add other types)
-// - consistent naming of output / variant / target
-
-const allDefaultVariants = ['cjs', 'esm', 'esnext', 'umd'] as const;
-type DefaultVariantName = typeof allDefaultVariants[number];
+// - consistent naming of  variant / target
 
 interface RollupHooks {
   readonly rollupPlugins: WaterfallHook<RollupPlugin[]>;
 }
 
-type PluginsOrPluginsBuilder =
-  | ((target: any) => RollupPlugin[])
-  | RollupPlugin[];
-
 declare module '@sewing-kit/hooks' {
-  interface BuildProjectConfigurationCustomHooks extends RollupHooks {}
+  interface BuildPackageConfigurationCustomHooks extends RollupHooks {}
+
+  interface BuildPackageTargetOptions {
+    rollupVariant?: string | undefined;
+  }
 }
 
 export function rollupPlugin({
@@ -67,6 +65,10 @@ export function rollupCssPlugin() {
   });
 }
 
+type PluginsOrPluginsBuilder =
+  | ((target: string) => RollupPlugin[])
+  | RollupPlugin[];
+
 export function rollupCustomPluginsPlugin(plugins: PluginsOrPluginsBuilder) {
   return createProjectBuildPlugin<Package>(
     'App.Rollup.CustomPlugins',
@@ -78,7 +80,7 @@ export function rollupCustomPluginsPlugin(plugins: PluginsOrPluginsBuilder) {
             // that returns the plugins for a given target
             const pluginsArray = Array.isArray(plugins)
               ? plugins
-              : plugins(target);
+              : plugins(target.options.rollupVariant || '');
 
             return rollupPlugins.concat(pluginsArray);
           });
@@ -88,18 +90,27 @@ export function rollupCustomPluginsPlugin(plugins: PluginsOrPluginsBuilder) {
   );
 }
 
-interface RollupCorePluginOptions {
-  variants?: Partial<Record<DefaultVariantName, boolean>>;
-}
+const runtimesForVariant = new Map([
+  ['cjs', [Runtime.Node]],
+  ['esm', [Runtime.Browser]],
+  ['esnext', [Runtime.Browser]],
+  ['umd', [Runtime.Browser]],
+]);
+
+const defaultVariants = {
+  cjs: true,
+  esm: true,
+  esnext: true,
+  umd: false,
+};
 
 export function rollupCorePlugin({
   variants: variantsOption = {},
-}: RollupCorePluginOptions = {}) {
-  const variants: Record<DefaultVariantName, boolean> = {
-    cjs: true,
-    esm: true,
-    esnext: true,
-    umd: false,
+}: {
+  variants?: Partial<typeof defaultVariants>;
+} = {}) {
+  const variants = {
+    ...defaultVariants,
     ...variantsOption,
   };
 
@@ -116,15 +127,29 @@ export function rollupCorePlugin({
       );
 
       // Define variants to build.
-      // For each variant that is set to true in the options, add a target
-      // Several variants are enabled by default
-      const targetOptionsArray = Object.entries(variants)
-        .filter(([_, isEnabled]) => Boolean(isEnabled))
-        .map(([variant]) => ({output: variant}));
-
+      // A variant shall be added to the build if it is enabled in the options
+      // and the current target has a runtime that should be build as part of
+      // this variant.
       hooks.targets.hook(targets => {
         return targets.map(target => {
-          return target.default ? target.add(...targetOptionsArray) : target;
+          if (!target.default) {
+            return target;
+          }
+
+          const newTargets = new Set<string>();
+
+          for (const [variant, runtimes] of runtimesForVariant.entries()) {
+            if (
+              variants[variant] &&
+              runtimes.some(rt => target.runtime.includes(rt))
+            ) {
+              newTargets.add(variant);
+            }
+          }
+
+          return target.add(
+            ...Array.from(newTargets).map(rollupVariant => ({rollupVariant})),
+          );
         });
       });
 
@@ -132,12 +157,9 @@ export function rollupCorePlugin({
       hooks.target.hook(({target, hooks}) => {
         hooks.configure.hook(hooks => {
           hooks.rollupPlugins.hook(rollupPlugins => {
-            // @ts-expect-error output does exist, we just need to type it properly
-            const output = target.options.output;
-
-            const defaultPlugins = isKnownVariant(output)
-              ? rollupDefaultPluginsBuilder(output)
-              : [];
+            const defaultPlugins = rollupDefaultPluginsBuilder(
+              target.options.rollupVariant || '',
+            );
 
             return rollupPlugins.concat(defaultPlugins);
           });
@@ -146,27 +168,40 @@ export function rollupCorePlugin({
 
       // TODO: get sk1 babel config from plugin-javascript?
 
-      const inputEntries = project.entries.map(entry => {
-        return require.resolve(entry.root, {paths: [project.root]});
-      });
-
       // For each each target that is defined, add a build step that runs Rollup
       hooks.target.hook(({target, hooks}) => {
+        const variant = target.options.rollupVariant || '';
+
+        if (!variant) {
+          return;
+        }
+
+        // Find entrypoints to run for this variant
+        const entrypointsForVariant = target.project.entries.filter(entry => {
+          return runtimesForVariant
+            .get(variant)
+            .some(rt => entry.runtimes.includes(rt));
+        });
+
+        if (entrypointsForVariant.length === 0) {
+          return;
+        }
+
         hooks.steps.hook((steps, configuration) => [
           ...steps,
           api.createStep(
             {id: 'Rollup', label: 'Building the package with Rollup'},
             async stepRunner => {
-              // @ts-expect-error Options thinks it has nothing on it, even thoough we set this
-              const output = target.options.output;
-
-              if (!isKnownVariant(output)) {
-                return;
-              }
+              stepRunner.log(
+                `Found entries for variant: ${entrypointsForVariant
+                  .map(({root}) => root)
+                  .join(', ')}`,
+                {level: LogLevel.Info},
+              );
 
               const outputOptionsArray = rollupOutputOptionsBuilder(
-                output,
-                project.fs.buildPath(output),
+                variant,
+                project.fs.buildPath(variant),
               );
 
               if (outputOptionsArray.length === 0) {
@@ -175,6 +210,10 @@ export function rollupCorePlugin({
 
               const rollupPlugins = await configuration.rollupPlugins.run([]);
 
+              const inputEntries = entrypointsForVariant.map(entry =>
+                require.resolve(entry.root, {paths: [project.root]}),
+              );
+
               await build(
                 {input: inputEntries, plugins: rollupPlugins},
                 outputOptionsArray,
@@ -182,6 +221,7 @@ export function rollupCorePlugin({
 
               stepRunner.log(
                 `Created ${outputOptionsArray.map(({dir}) => dir)}`,
+                {level: LogLevel.Info},
               );
             },
           ),
@@ -189,10 +229,6 @@ export function rollupCorePlugin({
       });
     },
   );
-}
-
-function isKnownVariant(value: any): value is DefaultVariantName {
-  return allDefaultVariants.includes(value);
 }
 
 function rollupDefaultPluginsBuilder(variant: string): InputOptions['plugins'] {
@@ -204,21 +240,13 @@ function rollupDefaultPluginsBuilder(variant: string): InputOptions['plugins'] {
 
   switch (variant) {
     case 'cjs':
-      return inputPluginsFactory({
-        targets: targets.node,
-      });
+      return inputPluginsFactory({targets: targets.node});
     case 'esm':
-      return inputPluginsFactory({
-        targets: targets.production,
-      });
+      return inputPluginsFactory({targets: targets.production});
     case 'umd':
-      return inputPluginsFactory({
-        targets: targets.production,
-      });
+      return inputPluginsFactory({targets: targets.production});
     case 'esnext':
-      return inputPluginsFactory({
-        targets: targets.esnext,
-      });
+      return inputPluginsFactory({targets: targets.esnext});
     default:
       return [];
   }
@@ -286,7 +314,7 @@ async function build(
   // create a bundle
   const bundle = await rollup(inputOptions);
 
-  console.log(inputOptions, outputOptionsArray);
+  // console.log(inputOptions, outputOptionsArray);
 
   for (const outputOptions of outputOptionsArray) {
     await bundle.write(outputOptions);
