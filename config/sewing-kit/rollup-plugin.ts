@@ -12,6 +12,7 @@ import {
   rollup,
   InputOptions,
   OutputOptions,
+  ChunkInfo,
   Plugin as RollupPlugin,
 } from 'rollup';
 import babel from '@rollup/plugin-babel';
@@ -19,6 +20,14 @@ import commonjs from '@rollup/plugin-commonjs';
 import nodeResolve from '@rollup/plugin-node-resolve';
 
 // Questions
+
+// With the new leaning on runtimes, and following the old style having a cjs
+// and esm build with the same targets  (and the node bulild being a distinct thing)
+// there's a potential for simplification - 3 targets, the difference being their target output:
+// - main which outputs cjs,esm,umd folders targeting lastest 3 browsers (+ current node if this is isomorphic?)
+// - esnext which outputs esnext folder targeting latest chrome
+
+// Extra bonus - could the target multipleication be done using differentialServing?
 
 // - Move outputOptions to be a hook to allow folks to config custom outputs
 // - consistent naming of  variant / target
@@ -91,17 +100,17 @@ export function rollupCustomPluginsPlugin(plugins: PluginsOrPluginsBuilder) {
 }
 
 const runtimesForVariant = new Map([
-  ['cjs', [Runtime.Node]],
+  ['cjs', [Runtime.Browser]],
   ['esm', [Runtime.Browser]],
-  ['esnext', [Runtime.Browser]],
   ['umd', [Runtime.Browser]],
+  ['esnext', [Runtime.Browser]],
 ]);
 
 const defaultVariants = {
   cjs: true,
   esm: true,
-  esnext: true,
   umd: false,
+  esnext: true,
 };
 
 export function rollupCorePlugin({
@@ -233,14 +242,13 @@ export function rollupCorePlugin({
 
 function rollupDefaultPluginsBuilder(variant: string): InputOptions['plugins'] {
   const targets = {
-    production: 'extends @shopify/browserslist-config',
-    esnext: 'extends @shopify/browserslist-config/latest-evergreen',
-    node: 'maintained node versions',
+    production: 'extends @shopify/browserslist-config, current node',
+    esnext: 'last 1 chrome versions',
   };
 
   switch (variant) {
     case 'cjs':
-      return inputPluginsFactory({targets: targets.node});
+      return inputPluginsFactory({targets: targets.production});
     case 'esm':
       return inputPluginsFactory({targets: targets.production});
     case 'umd':
@@ -256,11 +264,31 @@ function rollupOutputOptionsBuilder(
   variant: string,
   dir: string,
 ): OutputOptions[] {
+  // Foo.ts is compilied to Foo.js, while Foo.scss is compiled to Foo.scss.js
+  // Optionally changing the .js for .mjs / .esnext
+  const entryFileNamesBuilder = (ext = '.js') => {
+    const NonAssetExtensions = ['.js', '.jsx', '.ts', '.tsx'];
+    return (chunkInfo: ChunkInfo) => {
+      const isAssetfile = !NonAssetExtensions.some(nonAssetExt =>
+        chunkInfo.facadeModuleId.endsWith(nonAssetExt),
+      );
+
+      return `[name]${isAssetfile ? '[extname]' : ''}${ext}`;
+    };
+  };
+
   switch (variant) {
     case 'cjs':
       return [{format: 'cjs', dir, preserveModules: true, exports: 'named'}];
     case 'esm':
-      return [{format: 'esm', dir, preserveModules: true}];
+      return [
+        {
+          format: 'esm',
+          dir,
+          preserveModules: true,
+          entryFileNames: entryFileNamesBuilder('.mjs'),
+        },
+      ];
     case 'umd':
       return [{format: 'umd', dir}];
     case 'esnext':
@@ -269,7 +297,7 @@ function rollupOutputOptionsBuilder(
           format: 'esm',
           dir,
           preserveModules: true,
-          entryFileNames: '[name][extname].esnext',
+          entryFileNames: entryFileNamesBuilder('.esnext'),
         },
       ];
     default:
