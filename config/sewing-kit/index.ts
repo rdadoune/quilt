@@ -22,7 +22,11 @@ export function quiltPackage({jestEnv = 'jsdom', useReact = false} = {}) {
     useReact && react(),
     // buildFlexibleOutputs(),
 
-    rollupPlugin({plugins: [dummyPlugin()]}),
+    rollupPlugin({
+      browserTargets: 'extends @shopify/browserslist-config',
+      nodeTargets: 'node 12',
+      plugins: [dummyPlugin()],
+    }),
 
     createProjectBuildPlugin('Quilt.PackageBuild', ({hooks}) => {
       hooks.target.hook(({hooks}) => {

@@ -20,40 +20,34 @@ import commonjs from '@rollup/plugin-commonjs';
 import nodeResolve from '@rollup/plugin-node-resolve';
 
 // Questions
-
-// With the new leaning on runtimes, and following the old style having a cjs
-// and esm build with the same targets  (and the node bulild being a distinct thing)
-// there's a potential for simplification - 3 targets, the difference being their target output:
-// - main which outputs cjs,esm,umd folders targeting lastest 3 browsers (+ current node if this is isomorphic?)
-// - esnext which outputs esnext folder targeting latest chrome
-
-// Extra bonus - could the target multipleication be done using differentialServing?
-
-// - Move outputOptions to be a hook to allow folks to config custom outputs
 // - consistent naming of  variant / target
 
 interface RollupHooks {
   readonly rollupPlugins: WaterfallHook<RollupPlugin[]>;
+  readonly rollupOutputs: WaterfallHook<OutputOptions[]>;
 }
 
 declare module '@sewing-kit/hooks' {
   interface BuildPackageConfigurationCustomHooks extends RollupHooks {}
 
   interface BuildPackageTargetOptions {
-    rollupVariant?: string | undefined;
+    rollupName?: string | undefined;
   }
+}
+
+interface RollupPluginOptions extends RollupCorePluginOptions {
+  css?: boolean;
+  plugins?: Parameters<typeof rollupCustomPluginsPlugin>[0];
 }
 
 export function rollupPlugin({
   css = true,
   plugins,
-}: {
-  css?: boolean;
-  plugins?: Parameters<typeof rollupCustomPluginsPlugin>[0];
-} = {}) {
+  ...corePluginOptions
+}: RollupPluginOptions) {
   // Once we split this into one plugin file, rework this to lazy load plugins
   return createComposedProjectPlugin<Package>('App.Rollup.KitchenSink', [
-    rollupCorePlugin(),
+    rollupCorePlugin(corePluginOptions),
     css && rollupCssPlugin(),
     plugins && rollupCustomPluginsPlugin(plugins),
   ]);
@@ -89,7 +83,7 @@ export function rollupCustomPluginsPlugin(plugins: PluginsOrPluginsBuilder) {
             // that returns the plugins for a given target
             const pluginsArray = Array.isArray(plugins)
               ? plugins
-              : plugins(target.options.rollupVariant || '');
+              : plugins(target.options.rollupName || '');
 
             return rollupPlugins.concat(pluginsArray);
           });
@@ -99,28 +93,28 @@ export function rollupCustomPluginsPlugin(plugins: PluginsOrPluginsBuilder) {
   );
 }
 
-const runtimesForVariant = new Map([
-  ['cjs', [Runtime.Browser]],
-  ['esm', [Runtime.Browser]],
-  ['umd', [Runtime.Browser]],
-  ['esnext', [Runtime.Browser]],
-]);
+interface RollupCorePluginOptions {
+  browserTargets: string;
+  nodeTargets: string;
+  cjs?: boolean;
+  esm?: boolean;
+  umd?: boolean;
+  esnext?: boolean;
+}
 
-const defaultVariants = {
+type ResolvedRollupCorePluginOptions = Required<RollupCorePluginOptions>;
+
+const defaultOptions = {
   cjs: true,
   esm: true,
   umd: false,
   esnext: true,
 };
 
-export function rollupCorePlugin({
-  variants: variantsOption = {},
-}: {
-  variants?: Partial<typeof defaultVariants>;
-} = {}) {
-  const variants = {
-    ...defaultVariants,
-    ...variantsOption,
+export function rollupCorePlugin(baseOptions: RollupCorePluginOptions) {
+  const options: ResolvedRollupCorePluginOptions = {
+    ...defaultOptions,
+    ...baseOptions,
   };
 
   return createProjectBuildPlugin<Package>(
@@ -128,50 +122,61 @@ export function rollupCorePlugin({
     ({api, hooks, project}) => {
       // Define hooks that are available to be configured
       // Allows for consumers and other SK plugins to adjust the rollup config
-      // by adding additional plugins
+      // by adding additional plugins and outputs per build variant
       hooks.configureHooks.hook(
         addHooks<RollupHooks>(() => ({
           rollupPlugins: new WaterfallHook(),
+          rollupOutputs: new WaterfallHook(),
         })),
       );
 
-      // Define variants to build.
-      // A variant shall be added to the build if it is enabled in the options
-      // and the current target has a runtime that should be build as part of
-      // this variant.
+      // Define default build variants to build based off options.
+      // Enabling cjs/esm builds shall enable the 'main' variant
+      // Enabling esnext builds shall enable the 'esnext' variant
       hooks.targets.hook(targets => {
         return targets.map(target => {
           if (!target.default) {
             return target;
           }
 
-          const newTargets = new Set<string>();
+          const newVariants = [];
 
-          for (const [variant, runtimes] of runtimesForVariant.entries()) {
-            if (
-              variants[variant] &&
-              runtimes.some(rt => target.runtime.includes(rt))
-            ) {
-              newTargets.add(variant);
-            }
+          if (options.cjs || options.esm) {
+            newVariants.push({rollupName: 'main'});
           }
 
-          return target.add(
-            ...Array.from(newTargets).map(rollupVariant => ({rollupVariant})),
-          );
+          if (options.esnext) {
+            newVariants.push({rollupName: 'esnext'});
+          }
+
+          return target.add(...newVariants);
         });
       });
 
-      // Add additional plugins to each target
+      // Add default plugins and outputs for the default build variants
       hooks.target.hook(({target, hooks}) => {
-        hooks.configure.hook(hooks => {
-          hooks.rollupPlugins.hook(rollupPlugins => {
-            const defaultPlugins = rollupDefaultPluginsBuilder(
-              target.options.rollupVariant || '',
-            );
+        const name = target.options.rollupName || '';
 
-            return rollupPlugins.concat(defaultPlugins);
-          });
+        if (!name) {
+          return;
+        }
+
+        const babelTargets = [
+          target.runtime.includes(Runtime.Browser) && options.browserTargets,
+          target.runtime.includes(Runtime.Node) && options.nodeTargets,
+        ].filter(Boolean);
+
+        const defaultPlugins = rollupDefaultPluginsBuilder(name, babelTargets);
+
+        const defaultOptions = rollupDefaultOutputsBuilder(
+          name,
+          options,
+          project.fs.buildPath(),
+        );
+
+        hooks.configure.hook(hooks => {
+          hooks.rollupPlugins.hook(plugins => plugins.concat(defaultPlugins));
+          hooks.rollupOutputs.hook(outputs => outputs.concat(defaultOptions));
         });
       });
 
@@ -179,20 +184,9 @@ export function rollupCorePlugin({
 
       // For each each target that is defined, add a build step that runs Rollup
       hooks.target.hook(({target, hooks}) => {
-        const variant = target.options.rollupVariant || '';
+        const name = target.options.rollupName || '';
 
-        if (!variant) {
-          return;
-        }
-
-        // Find entrypoints to run for this variant
-        const entrypointsForVariant = target.project.entries.filter(entry => {
-          return runtimesForVariant
-            .get(variant)
-            .some(rt => entry.runtimes.includes(rt));
-        });
-
-        if (entrypointsForVariant.length === 0) {
+        if (!name) {
           return;
         }
 
@@ -201,35 +195,28 @@ export function rollupCorePlugin({
           api.createStep(
             {id: 'Rollup', label: 'Building the package with Rollup'},
             async stepRunner => {
-              stepRunner.log(
-                `Found entries for variant: ${entrypointsForVariant
-                  .map(({root}) => root)
-                  .join(', ')}`,
-                {level: LogLevel.Info},
+              const inputEntries = target.project.entries.map(entry =>
+                require.resolve(entry.root, {paths: [project.root]}),
               );
+              const rollupPlugins = await configuration.rollupPlugins.run([]);
+              const rollupOutputs = await configuration.rollupOutputs.run([]);
 
-              const outputOptionsArray = rollupOutputOptionsBuilder(
-                variant,
-                project.fs.buildPath(variant),
-              );
-
-              if (outputOptionsArray.length === 0) {
+              if (rollupOutputs.length === 0) {
                 return;
               }
 
-              const rollupPlugins = await configuration.rollupPlugins.run([]);
-
-              const inputEntries = entrypointsForVariant.map(entry =>
-                require.resolve(entry.root, {paths: [project.root]}),
-              );
-
               await build(
                 {input: inputEntries, plugins: rollupPlugins},
-                outputOptionsArray,
+                rollupOutputs,
               );
 
+              const logOutputs = rollupOutputs.map(({dir}) => dir);
+              const logInputs = target.project.entries
+                .map(({root}) => root)
+                .join(', ');
+
               stepRunner.log(
-                `Created ${outputOptionsArray.map(({dir}) => dir)}`,
+                `Created ${logOutputs} for input(s): ${logInputs}`,
                 {level: LogLevel.Info},
               );
             },
@@ -240,29 +227,25 @@ export function rollupCorePlugin({
   );
 }
 
-function rollupDefaultPluginsBuilder(variant: string): InputOptions['plugins'] {
-  const targets = {
-    production: 'extends @shopify/browserslist-config, current node',
-    esnext: 'last 1 chrome versions',
-  };
-
-  switch (variant) {
-    case 'cjs':
-      return inputPluginsFactory({targets: targets.production});
-    case 'esm':
-      return inputPluginsFactory({targets: targets.production});
-    case 'umd':
-      return inputPluginsFactory({targets: targets.production});
-    case 'esnext':
-      return inputPluginsFactory({targets: targets.esnext});
-    default:
-      return [];
+function rollupDefaultPluginsBuilder(
+  variant: string,
+  targets: string[],
+): InputOptions['plugins'] {
+  if (variant === 'main') {
+    return inputPluginsFactory({targets});
   }
+
+  if (variant === 'esnext') {
+    return inputPluginsFactory({targets: ['last 1 chrome versions']});
+  }
+
+  return [];
 }
 
-function rollupOutputOptionsBuilder(
+function rollupDefaultOutputsBuilder(
   variant: string,
-  dir: string,
+  options: ResolvedRollupCorePluginOptions,
+  rootDir: string,
 ): OutputOptions[] {
   // Foo.ts is compilied to Foo.js, while Foo.scss is compiled to Foo.scss.js
   // Optionally changing the .js for .mjs / .esnext
@@ -277,38 +260,59 @@ function rollupOutputOptionsBuilder(
     };
   };
 
-  switch (variant) {
-    case 'cjs':
-      return [{format: 'cjs', dir, preserveModules: true, exports: 'named'}];
-    case 'esm':
-      return [
-        {
-          format: 'esm',
-          dir,
-          preserveModules: true,
-          entryFileNames: entryFileNamesBuilder('.mjs'),
-        },
-      ];
-    case 'umd':
-      return [{format: 'umd', dir}];
-    case 'esnext':
-      return [
-        {
-          format: 'esm',
-          dir,
-          preserveModules: true,
-          entryFileNames: entryFileNamesBuilder('.esnext'),
-        },
-      ];
-    default:
-      return [];
+  if (variant === 'main') {
+    const outputs = [];
+
+    if (options.cjs) {
+      outputs.push({
+        format: 'cjs',
+        dir: `${rootDir}/cjs`,
+        preserveModules: true,
+        exports: 'named',
+      });
+    }
+
+    if (options.esm) {
+      outputs.push({
+        format: 'esm',
+        dir: `${rootDir}/esm`,
+        preserveModules: true,
+        entryFileNames: entryFileNamesBuilder('.mjs'),
+      });
+    }
+
+    if (options.umd) {
+      outputs.push({
+        format: 'umd',
+        dir: `${rootDir}/umd`,
+        exports: 'named',
+        // TODO name is wrong - how to wrangle this?
+        // Should UMD even be a default option? Folks can now add extra outputs to a variant
+        name: variant,
+      });
+    }
+
+    return outputs;
   }
+
+  if (variant === 'esnext') {
+    return [
+      {
+        format: 'esm',
+        dir: `${rootDir}/esnext`,
+        preserveModules: true,
+        entryFileNames: entryFileNamesBuilder('.esnext'),
+      },
+    ];
+  }
+
+  return [];
 }
 
 function inputPluginsFactory({
-  targets = 'defaults',
+  targets,
 }: {
-  targets: string;
+  targets: string[];
 }): InputOptions['plugins'] {
   return [
     nodeResolve({
