@@ -1,4 +1,6 @@
 import 'regenerator-runtime';
+import path from 'path';
+
 import {
   createProjectBuildPlugin,
   Package,
@@ -8,7 +10,11 @@ import {
   Runtime,
   LogLevel,
 } from '@sewing-kit/plugins';
-import type {BabelConfig} from '@sewing-kit/plugin-javascript';
+import {
+  writeEntries,
+  BabelConfig,
+  ExportStyle,
+} from '@sewing-kit/plugin-javascript';
 import {
   rollup,
   InputOptions,
@@ -216,6 +222,28 @@ export function rollupCorePlugin(baseOptions: RollupCorePluginOptions) {
                 {input: inputEntries, plugins: rollupPlugins},
                 rollupOutputs,
               );
+
+              const writeEntriesConfigs = rollupOutputs
+                .map(output => {
+                  const lookup = {
+                    esm: {exportStyle: 'esm', extension: '.mjs'},
+                    cjs: {exportStyle: 'cjs', extension: '.js'},
+                    esnext: {exportStyle: 'esm', extension: '.esnext'},
+                  };
+
+                  const result = lookup[path.basename(output.dir)] || null;
+
+                  if (!result) {
+                    return null;
+                  }
+
+                  return {project, outputPath: output.dir, ...result};
+                })
+                .filter(item => Boolean(item));
+
+              for (const config of writeEntriesConfigs) {
+                await writeEntries(config);
+              }
 
               const logOutputs = rollupOutputs.map(({dir}) => dir);
               const logInputs = target.project.entries

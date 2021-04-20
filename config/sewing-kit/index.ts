@@ -8,6 +8,8 @@ import {react} from '@sewing-kit/plugin-react';
 import {javascript, updateBabelPreset} from '@sewing-kit/plugin-javascript';
 import {typescript} from '@sewing-kit/plugin-typescript';
 import {buildFlexibleOutputs} from '@sewing-kit/plugin-package-flexible-outputs';
+import {buildTypeScriptDefinitions} from '@sewing-kit/plugin-package-typescript';
+import {buildBinaries} from '@sewing-kit/plugin-package-binaries';
 import {} from '@sewing-kit/plugin-jest';
 
 import {rollupPlugin} from './rollup-plugin';
@@ -21,6 +23,8 @@ export function quiltPackage({jestEnv = 'jsdom', useReact = false} = {}) {
     typescript(),
     useReact && react(),
     // buildFlexibleOutputs(),
+    buildTypeScriptDefinitions(),
+    buildBinaries(),
 
     rollupPlugin({
       browserTargets: 'extends @shopify/browserslist-config',
