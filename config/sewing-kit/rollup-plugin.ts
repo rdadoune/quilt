@@ -8,6 +8,7 @@ import {
   Runtime,
   LogLevel,
 } from '@sewing-kit/plugins';
+import type {BabelConfig} from '@sewing-kit/plugin-javascript';
 import {
   rollup,
   InputOptions,
@@ -153,7 +154,6 @@ export function rollupCorePlugin(baseOptions: RollupCorePluginOptions) {
         });
       });
 
-      // Add default plugins and outputs for the default build variants
       hooks.target.hook(({target, hooks}) => {
         const name = target.options.rollupName || '';
 
@@ -166,30 +166,37 @@ export function rollupCorePlugin(baseOptions: RollupCorePluginOptions) {
           target.runtime.includes(Runtime.Node) && options.nodeTargets,
         ].filter(Boolean);
 
-        const defaultPlugins = rollupDefaultPluginsBuilder(name, babelTargets);
+        // Add default plugins and outputs for the default build variants
+        hooks.configure.hook(async hooks => {
+          const babelConfig = await hooks.babelConfig.run({
+            presets: [
+              [
+                '@sewing-kit/plugin-javascript/babel-preset',
+                // undefined targets as we use the top-level targets option
+                {modules: 'auto', target: undefined},
+              ],
+            ],
+            plugins: [],
+          });
 
-        const defaultOptions = rollupDefaultOutputsBuilder(
-          name,
-          options,
-          project.fs.buildPath(),
-        );
+          hooks.rollupPlugins.hook(plugins =>
+            plugins.concat(
+              rollupDefaultPluginsBuilder(name, babelConfig, babelTargets),
+            ),
+          );
 
-        hooks.configure.hook(hooks => {
-          hooks.rollupPlugins.hook(plugins => plugins.concat(defaultPlugins));
-          hooks.rollupOutputs.hook(outputs => outputs.concat(defaultOptions));
+          hooks.rollupOutputs.hook(outputs =>
+            outputs.concat(
+              rollupDefaultOutputsBuilder(
+                name,
+                options,
+                project.fs.buildPath(),
+              ),
+            ),
+          );
         });
-      });
 
-      // TODO: get sk1 babel config from plugin-javascript?
-
-      // For each each target that is defined, add a build step that runs Rollup
-      hooks.target.hook(({target, hooks}) => {
-        const name = target.options.rollupName || '';
-
-        if (!name) {
-          return;
-        }
-
+        // Add build steps
         hooks.steps.hook((steps, configuration) => [
           ...steps,
           api.createStep(
@@ -229,14 +236,18 @@ export function rollupCorePlugin(baseOptions: RollupCorePluginOptions) {
 
 function rollupDefaultPluginsBuilder(
   variant: string,
+  babelConfig: BabelConfig,
   targets: string[],
 ): InputOptions['plugins'] {
   if (variant === 'main') {
-    return inputPluginsFactory({targets});
+    return inputPluginsFactory({babelConfig, targets});
   }
 
   if (variant === 'esnext') {
-    return inputPluginsFactory({targets: ['last 1 chrome versions']});
+    return inputPluginsFactory({
+      babelConfig,
+      targets: ['last 1 chrome versions'],
+    });
   }
 
   return [];
@@ -311,8 +322,10 @@ function rollupDefaultOutputsBuilder(
 
 function inputPluginsFactory({
   targets,
+  babelConfig,
 }: {
   targets: string[];
+  babelConfig: BabelConfig;
 }): InputOptions['plugins'] {
   return [
     nodeResolve({
@@ -331,10 +344,7 @@ function inputPluginsFactory({
       babelHelpers: 'bundled',
       configFile: false,
       targets,
-      presets: [
-        ['@shopify/babel-preset/web', {modules: 'auto', typescript: true}],
-        ['@shopify/babel-preset/react'],
-      ],
+      ...babelConfig,
     }),
   ];
 }
