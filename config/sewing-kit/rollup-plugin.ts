@@ -226,9 +226,15 @@ export function rollupCorePlugin(baseOptions: RollupCorePluginOptions) {
               const writeEntriesConfigs = rollupOutputs
                 .map(output => {
                   const lookup = {
-                    esm: {exportStyle: 'esm', extension: '.mjs'},
-                    cjs: {exportStyle: 'cjs', extension: '.js'},
-                    esnext: {exportStyle: 'esm', extension: '.esnext'},
+                    esm: {
+                      exportStyle: ExportStyle.EsModules,
+                      extension: '.mjs',
+                    },
+                    cjs: {exportStyle: ExportStyle.CommonJs, extension: '.js'},
+                    esnext: {
+                      exportStyle: ExportStyle.EsModules,
+                      extension: '.esnext',
+                    },
                   };
 
                   const result = lookup[path.basename(output.dir)] || null;
