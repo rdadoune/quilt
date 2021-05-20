@@ -18,8 +18,8 @@ export function quiltPackage({jestEnv = 'jsdom', useReact = false} = {}) {
     typescript(),
     useReact && react(),
     packageBuild({
-      nodeTargets: 'node 12.0',
-      browserTargets: 'defaults',
+      nodeTargets: 'node 12.14.0',
+      browserTargets: 'extends @shopify/browserslist-config',
     }),
     createProjectBuildPlugin('Quilt.PackageBuild', ({hooks}) => {
       hooks.target.hook(({hooks}) => {
