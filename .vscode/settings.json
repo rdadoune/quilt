@@ -13,9 +13,9 @@
   "files.exclude": {
     "**/.git": true,
     "**/node_modules": true,
-    "**/.DS_Store": true,
-    "packages/*/{.sewing-kit,build,bin}": true,
-    ".{dev,shadowenv.d,sewing-kit}": true
+    "**/.DS_Store": true
+    // "packages/*/{.sewing-kit,build,bin}": true,
+    // ".{dev,shadowenv.d,sewing-kit}": true
   },
   "files.insertFinalNewline": true,
   "files.trimTrailingWhitespace": true,
